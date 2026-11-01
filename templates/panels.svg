@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 900">
+<g fill="none" stroke="#909090" stroke-width="2" stroke-linejoin="round" data-locked="true">
+<path d="M 40 40 h 275 v 260 h -275 Z"/>
+<path d="M 325 40 h 275 v 260 h -275 Z"/>
+<path d="M 40 310 h 180 v 260 h -180 Z"/>
+<path d="M 230 310 h 180 v 260 h -180 Z"/>
+<path d="M 420 310 h 180 v 260 h -180 Z"/>
+<path d="M 40 580 h 560 v 260 h -560 Z"/>
+</g>
+</svg>
