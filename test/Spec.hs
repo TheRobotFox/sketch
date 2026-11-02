@@ -139,10 +139,72 @@ main = do
             Just d -> d.view == Just v && d.strokes == inks && null d.skipped
             Nothing -> False
       , testCase "a template reads as locked lines, and what can't be read is named" do
-          d <- maybe (assertFailure "not SVG") pure (Svg.parse "<svg><g stroke=\"#a8bfe0\" stroke-width=\"1\" fill=\"none\" data-locked=\"true\"><path d=\"M 40 90 H 600 m 0 30 h -560\"/></g><rect/></svg>")
+          d <- maybe (assertFailure "not SVG") pure (Svg.parse "<svg><g stroke=\"#a8bfe0\" stroke-width=\"1\" fill=\"none\" data-locked=\"true\"><path d=\"M 40 90 H 600 m 0 30 h -560\"/></g><circle/></svg>")
           map (.locked) d.strokes @?= [True, True]
           [(a, b) | Ink {stroke = Stroke (V4 a _ _ b :| [])} <- d.strokes] @?= [(V3 40 90 0.5, V3 600 90 0.5), (V3 600 120 0.5, V3 40 120 0.5)]
-          d.skipped @?= ["rect"]
+          d.skipped @?= ["circle"]
+      , testCase "lines and rectangles match equivalent paths and inherit styling" do
+          let readSvg body = maybe (assertFailure "not SVG") pure (Svg.parse ("<svg stroke=\"#abc\" stroke-width=\"2\"><g data-locked=\"true\">" <> body <> "</g></svg>"))
+              pairs =
+                [ ("<line x1=\"3\" y1=\"6\" x2=\"12\" y2=\"18\"/>", "M3 6L12 18")
+                , ("<line x2=\" 3e1px \"/>", "M0 0L30 0")
+                , ("<line/>", "M0 0L0 0")
+                , ("<rect x=\"3\" y=\"6\" width=\"12px\" height=\"18\"/>", "M3 6H15V24H3Z")
+                , ("<rect width=\"12\" height=\"18\"/>", "M0 0H12V18H0Z")
+                ]
+          mapM_ (\(shape, path) -> do
+            actual <- readSvg shape
+            expected <- readSvg ("<path d=\"" <> path <> "\"/>")
+            actual.strokes @?= expected.strokes
+            actual.skipped @?= []
+            map (.color) actual.strokes @?= [Color 0xaa 0xbb 0xcc]
+            map (.locked) actual.strokes @?= [True]) pairs
+      , testCase "shape geometry stays local while inline styles and placement apply" do
+          d <- maybe (assertFailure "not SVG") pure (Svg.parse "<svg><g stroke=\"#000\" x1=\"100\" y1=\"100\" x2=\"100\"><line x2=\"3\" stroke-width=\"8\" style=\"stroke:#fff;stroke:#123456;stroke-width:2px\" transform=\"translate(10 20) scale(2)\"/></g></svg>")
+          d.skipped @?= []
+          d.strokes @?= [Ink (V2 10 20) 2 (Color 0x12 0x34 0x56) False (Stroke (V4 (V3 0 0 1) (V3 1 0 1) (V3 2 0 1) (V3 3 0 1) :| []))]
+      , testCase "rounded rectangles close smoothly and clamp corner radii" do
+          let readRect attrs = maybe (assertFailure "not SVG") pure (Svg.parse ("<svg><rect stroke=\"#000\" width=\"20\" height=\"10\" " <> attrs <> "/></svg>"))
+          d <- readRect "rx=\"2\""
+          both <- readRect "rx=\"2\" ry=\"2\""
+          d.strokes @?= both.strokes
+          onlyY <- readRect "ry=\"2\""
+          onlyY.strokes @?= both.strokes
+          square <- readRect "rx=\"2\" ry=\"0\""
+          plain <- readRect ""
+          square.strokes @?= plain.strokes
+          large <- readRect "rx=\"100\" ry=\"100\""
+          clamped <- readRect "rx=\"10\" ry=\"5\""
+          large.strokes @?= clamped.strokes
+          case d.strokes of
+            [Ink {stroke = Stroke cs}] -> do
+              let curves = toList cs
+                  starts = [a | V4 a _ _ _ <- curves]
+                  ends = [b | V4 _ _ _ b <- curves]
+              starts @?= [V3 2 0 0.5, V3 18 0 0.5, V3 20 2 0.5, V3 20 8 0.5, V3 18 10 0.5, V3 2 10 0.5, V3 0 8 0.5, V3 0 2 0.5]
+              ends @?= drop 1 starts <> take 1 starts
+              assertBool "tangents join" (and [norm (cross (b - a) (a - c)) < 1e-9 | (V4 a b _ _, V4 _ _ c _) <- zip curves (last curves : init curves)])
+              saved <- maybe (assertFailure "not SVG") pure (Svg.parse (B8.unpack (B.toStrict (toLazyByteString (Svg.document (View 0 1) d.strokes)))))
+              saved.strokes @?= d.strokes
+            _ -> assertFailure "expected one rounded rectangle"
+      , testCase "empty rectangles and unpainted shapes add no ink" do
+          d <- maybe (assertFailure "not SVG") pure (Svg.parse "<svg stroke=\"#000\"><rect/><rect width=\"10\"/><rect width=\"0\" height=\"10\"/><line stroke=\"none\"/><line stroke-width=\"0\"/></svg>")
+          d.strokes @?= []
+          d.skipped @?= []
+      , testCase "invalid shapes are reported and following shapes still load" do
+          mapM_ (\(shape, why) -> do
+            d <- maybe (assertFailure "not SVG") pure (Svg.parse ("<svg stroke=\"#000\">" <> shape <> "<line x2=\"3\"/></svg>"))
+            d.skipped @?= [why]
+            length d.strokes @?= 1)
+            [ ("<line x1=\"bad\"/>", "line with an unreadable x1")
+            , ("<line y2=\"20%\"/>", "line with an unreadable y2")
+            , ("<line x2=\"1e999\"/>", "line with an unreadable x2")
+            , ("<line stroke-width=\"-1\"/>", "line with a negative stroke-width")
+            , ("<rect width=\"-1\" height=\"2\"/>", "rect with negative dimensions or corner radii")
+            , ("<rect rx=\"-1\"/>", "rect with negative dimensions or corner radii")
+            , ("<rect width=\"bad\"/>", "rect with an unreadable width")
+            , ("<rect transform=\"rotate(30)\"/>", "rect with a transform other than translate and scale")
+            ]
       , testGroup "the GPU inks what the CPU works out" [testCase ("zoom " <> show z) (assertBool msg ok) | (z, ok, msg) <- gpu]
       ]
 
