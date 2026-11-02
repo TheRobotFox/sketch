@@ -58,10 +58,6 @@ data Event
   | Quit
   deriving (Eq, Show)
 
--- | The eraser's radius, in window pixels.
-eraser :: Double
-eraser = 8
-
 initial :: Settings -> Model
 initial s = Model {settings = s, view = View 0 1, strokes = mempty, edits = 0, past = [], future = [], drawing = Nothing, erasing = Nothing, pressure = 0, color = 1, penWidth = s.width}
 
@@ -109,9 +105,10 @@ rub :: V2 Double -> Model -> Model
 rub s m = case m.erasing of
   Nothing -> m
   Just (before, since, from) ->
-    let n = ceiling (norm (s - from) / (eraser / 2)) :: Int
+    let w = 5 * m.penWidth * m.pressure
+        n = ceiling (norm (s - from) / (w / 2)) :: Int
         path = from :| [from + (s - from) ^* (fromIntegral i / fromIntegral n) | i <- [1 .. n]]
-        cut = fmap (\i -> (i, wipe eraser m.view path i)) m.strokes
+        cut = fmap (\i -> (i, wipe w m.view path i)) m.strokes
         m' = m {erasing = Just (before, since, s)}
      in if all (isNothing . snd) cut then m' else m' {strokes = foldMap (\(i, c) -> Seq.fromList (fromMaybe [i] c)) cut, edits = m.edits + 1}
 
@@ -126,5 +123,5 @@ stop m = case (finish m.settings.smoothing =<< m.drawing, m.erasing) of
 title :: Model -> String
 title m =
   "sketch  "
-    <> (if m.color == 0 then "Eraser " <> show (round (2 * eraser) :: Int) <> " px" else "Color " <> show m.color <> "  Width " <> showFFloat (Just 1) m.penWidth "")
+    <> (if m.color == 0 then "Eraser " <> show (round (5 * m.penWidth) :: Int) <> " px" else "Color " <> show m.color <> "  Width " <> showFFloat (Just 1) m.penWidth "")
     <> "  Zoom " <> showEFloat (Just 1) m.view.zoom ""

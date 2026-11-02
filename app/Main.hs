@@ -70,8 +70,8 @@ options =
     <$> strArgument (metavar "FILE" <> value "sketch.svg" <> showDefault <> help "the drawing to open, or start, and save to")
     <*> optional (strOption (short 'o' <> metavar "NEW.svg" <> help "save to this new file instead, to start from a template"))
     <*> ( Settings
-            <$> option positive (long "width" <> metavar "PIXELS" <> value 6 <> showDefault <> help "the pen's width at full pressure")
-            <*> option positive (long "smoothing" <> metavar "PIXELS" <> value 1.5 <> showDefault <> help "how far strokes may stray from the pen, to smooth them")
+            <$> option positive (long "width" <> metavar "PIXELS" <> value 9 <> showDefault <> help "the pen's width at full pressure")
+            <*> option positive (long "smoothing" <> metavar "PIXELS" <> value 2 <> showDefault <> help "how far strokes may stray from the pen, to smooth them")
             <*> option (eitherReader colors) (long "colors" <> metavar "#RGB,..." <> value defaultPalette <> help "the colours keys 1 to 9 pick, as #RGB or #RRGGBB")
         )
   where
