@@ -20,12 +20,11 @@ import Graphics.GL.Core33 (glVertexAttribDivisor)
 import Graphics.Rendering.OpenGL (($=))
 import Graphics.Rendering.OpenGL qualified as GL
 import Linear
-import Model (Model (..))
-import Stroke (Box)
+import Model (Erasing (..), Model (..))
+import Stroke (Box, unionBounds)
 
 data Renderer = Renderer
-  { pieces :: GL.BufferObject
-  , layer, frame :: Target -- ^ the finished strokes as last drawn, and those plus the stroke being drawn
+  { layer, frame :: Target -- ^ the finished strokes as last drawn, and those plus the stroke being drawn
   , uniforms :: String -> GL.UniformLocation
   , drawn :: IORef (Maybe (V2 Int, View, Int)) -- ^ the size, view and edits the layer shows
   }
@@ -61,7 +60,7 @@ newRenderer = do
   layer <- target
   frame <- target
   drawn <- newIORef Nothing
-  pure Renderer {pieces, layer, frame, uniforms = \n -> maybe (error n) id (lookup n locations), drawn}
+  pure Renderer {layer, frame, uniforms = \n -> maybe (error n) id (lookup n locations), drawn}
   where
     target = do
       t <- GL.genObjectName
@@ -84,10 +83,19 @@ render r size m = do
         GL.textureBinding GL.Texture2D $= Just t
         GL.texImage2D GL.Texture2D GL.NoProxy 0 GL.RGBA8 (GL.TextureSize2D w h) 0 (GL.PixelData GL.RGBA GL.UnsignedByte nullPtr)
     onto r.layer do
+      -- During a gesture only the changed strokes' area needs repainting.
+      -- The untouched pixels and strokes stay in the cached layer.
+      let area@(V2 lx ly, V2 hx hy) = case (before, m.erasing) of
+            (Just (oldSize, oldView, oldEdits), Just e)
+              | oldSize == size, oldView == m.view, oldEdits >= e.since, Just (lo, hi) <- e.damage ->
+                  (fmap (fromIntegral . (floor :: Double -> Int)) (clip (lo - 1)), fmap (fromIntegral . (ceiling :: Double -> Int)) (clip (hi + 1)))
+            _ -> (0, window)
+      GL.scissor $= Just (GL.Position (floor lx) (h - ceiling hy), GL.Size (max 0 (ceiling hx - floor lx)) (max 0 (ceiling hy - floor ly)))
       -- White as viewers show SVG, with no ink in its alpha.
       GL.clearColor $= GL.Color4 1 1 1 0
       GL.clear [GL.ColorBuffer]
-      ink r window [(s.color, shown window m.view s) | s <- toList m.strokes]
+      ink r window [(s.color, shown area m.view s) | s <- toList m.strokes]
+      GL.scissor $= Nothing
     writeIORef r.drawn (Just key)
   copy r.layer (Just r.frame)
   onto r.frame $ ink r window [(d.color, live window m.view d) | Just d <- [m.drawing]]
@@ -95,6 +103,7 @@ render r size m = do
   where
     V2 w h = fromIntegral <$> size
     window = fromIntegral <$> size
+    clip = liftA2 min window . liftA2 max 0
     onto (Target f _) action = do
       GL.bindFramebuffer GL.Framebuffer $= f
       GL.viewport $= (GL.Position 0 0, GL.Size w h)
@@ -111,7 +120,7 @@ ink r window strokes = do
   forM_ strokes \(Color red green blue, s) -> case mapMaybe (encode window) s of
     [] -> pure ()
     ps -> do
-      let (V2 lx ly, V2 hx hy) = foldr1 (\(l, h) (l', h') -> (liftA2 min l l', liftA2 max h h')) (map snd ps)
+      let (V2 lx ly, V2 hx hy) = foldr1 unionBounds (map snd ps)
       B.useAsCStringLen (B.toStrict (toLazyByteString (foldMap (foldMap floatLE . fst) ps))) \(p, n) ->
         GL.bufferData GL.ArrayBuffer $= (fromIntegral n, p, GL.StreamDraw)
       -- Coverage, keeping the most, into alpha alone.

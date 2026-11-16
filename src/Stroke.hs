@@ -3,12 +3,17 @@
 module Stroke
   ( Point
   , Cubic
-  , Stroke (..)
+  , Stroke
+  , fromCurves
+  , curves
   , Box
   , fit
   , split
   , at
   , bounds
+  , unionBounds
+  , overlaps
+  , rounded
   , pieces
   , capsule
   , erase
@@ -16,9 +21,7 @@ module Stroke
   ) where
 
 import Data.Foldable (toList)
-import Data.List (intercalate, zipWith4)
-import Data.List.Split (splitWhen)
-import Data.Maybe (catMaybes, isNothing)
+import Data.List (zipWith4)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NE
 import Linear
@@ -30,8 +33,12 @@ type Point = V3 Double
 type Cubic = V4 Point
 
 -- | Curves joined end to start. A tap is one curve with all its points equal.
-newtype Stroke = Stroke (NonEmpty Cubic)
+data Stroke = Stroke {curves :: NonEmpty Cubic, bounds :: Box}
   deriving (Eq, Show)
+
+-- | Cache the bounds once, shared by erasing, rendering and saving.
+fromCurves :: NonEmpty Cubic -> Stroke
+fromCurves cs = Stroke cs (curveBounds cs)
 
 -- | Lowest and highest corner.
 type Box = (V2 Double, V2 Double)
@@ -39,7 +46,7 @@ type Box = (V2 Double, V2 Double)
 -- | A smooth stroke through pen samples, oldest first, straying from them
 -- by about the tolerance at most.
 fit :: Double -> NonEmpty Point -> Stroke
-fit tolerance = Stroke . catmullRom tolerance . simplify tolerance
+fit tolerance = fromCurves . catmullRom tolerance . simplify tolerance
 
 -- | Ramer–Douglas–Peucker: keep the ends, and the point between furthest from
 -- the line joining them while it's further than the tolerance.
@@ -86,14 +93,30 @@ split t (V4 a b c d) = (V4 a ab abc abcd, V4 abcd bcd cd d)
 at :: Double -> Cubic -> Point
 at t = (\(V4 _ _ _ p) -> p) . fst . split t
 
--- | A box around all of a stroke's ink, which keeps within its control
--- points grown by their widest radius.
-bounds :: Stroke -> Box
-bounds (Stroke curves) = (foldr1 (liftA2 min) xy - pure r, foldr1 (liftA2 max) xy + pure r)
+curveBounds :: NonEmpty Cubic -> Box
+curveBounds cs = (foldr1 (liftA2 min) xy - pure r, foldr1 (liftA2 max) xy + pure r)
   where
-    points = curves >>= \(V4 a b c d) -> a :| [b, c, d]
+    points = cs >>= \(V4 a b c d) -> a :| [b, c, d]
     xy = fmap (\(V3 x y _) -> V2 x y) points
     r = maximum (fmap (\(V3 _ _ w) -> w) points)
+
+unionBounds :: Box -> Box -> Box
+unionBounds (lo, hi) (lo', hi') = (liftA2 min lo lo', liftA2 max hi hi')
+
+overlaps :: Box -> Box -> Bool
+overlaps (lo, hi) (lo', hi') = and (liftA2 (<=) lo hi') && and (liftA2 (<=) lo' hi)
+
+-- | Short decimal coordinates, to a thousandth of a pixel at the current
+-- zoom. Keep large values whose floating point spacing is already coarser.
+rounded :: Double -> Stroke -> Stroke
+rounded pixel s = fromCurves (fmap (roundCurve pixel) s.curves)
+
+roundCurve :: Double -> Cubic -> Cubic
+roundCurve pixel = fmap (fmap short)
+  where
+    factor = 10 ** fromIntegral (max (-300) (min 300 (3 - floor (logBase 10 pixel) :: Int)))
+    short x | abs x >= 1e15 / factor = x
+            | otherwise = fromInteger (round (x * factor)) / factor
 
 -- | The straight pieces of a stroke whose ink may show in a window, a disc
 -- with this centre and radius: each curve halved until it is flat to the
@@ -104,7 +127,7 @@ bounds (Stroke curves) = (foldr1 (liftA2 min) xy - pure r, foldr1 (liftA2 max) x
 -- only exact to about 2^-52 of the largest, so it is flat enough at 2^-50
 -- of that, however small the tolerance.
 pieces :: Double -> V2 Double -> Double -> Stroke -> [(Point, Point)]
-pieces tolerance centre radius (Stroke curves) = foldMap (\c -> go (max tolerance (2 ^^ (-50 :: Int) * largest c)) (60 :: Int) c) curves
+pieces tolerance centre radius s = foldMap (\c -> go (max tolerance (2 ^^ (-50 :: Int) * largest c)) (60 :: Int) c) s.curves
   where
     go t n c@(V4 a@(V3 ax ay ra) b c' d@(V3 dx dy rd))
       | bend <= t || n == 0 = [(a, d)]
@@ -116,32 +139,60 @@ pieces tolerance centre radius (Stroke curves) = foldMap (\c -> go (max toleranc
         gap = capsule (V2 ax ay) (V2 dx dy) ra rd centre
     largest = maximum . (1 :) . map abs . concatMap toList . toList
 
--- | What's left of a stroke where an eraser, discs of this radius at these
--- points, wipes it, if it touches: each curve is cut where its ink comes
--- within the eraser, to about a quarter of this pixel, and split exactly
--- there. Ink over twice as wide as the eraser stays, and so do curves it
--- doesn't touch, just as they were; leftovers no longer than it go.
+-- | What's left where an eraser of this radius sweeps along these points,
+-- if it touches: curves are cut to about a quarter of this pixel, with cut
+-- coordinates rounded to a thousandth. Ink over twice as wide as the eraser
+-- stays, as do untouched curves exactly; leftovers no longer than it go.
 erase :: Double -> Double -> NonEmpty (V2 Double) -> Stroke -> Maybe [Stroke]
-erase reach pixel eraser (Stroke curves)
+erase reach pixel (first :| positions) s
+  | reach <= 0 || pixel <= 0 = Nothing
   | all null cuts = Nothing
-  | otherwise = Just [Stroke run | Just run <- map (NE.nonEmpty . catMaybes) (splitWhen isNothing kept), sum (fmap legs run) > reach]
+  | otherwise = Just (rebuild [] (zip (toList s.curves) cuts))
   where
-    cuts = map (merge . go 0 1) (toList curves)
-    kept = concat (zipWith keep cuts (toList curves))
-    -- A curve's pieces between its cuts, and Nothing for each cut.
-    keep cs c = intercalate [Nothing] [[Just (part a b c) | a < b] | (a, b) <- zip (0 : map snd cs) (map fst cs <> [1])]
-    part a b c = snd (split (a / b) (fst (split b c)))
-    -- The parameter ranges of a curve whose ink the eraser touches.
-    go t0 t1 c@(V4 a@(V3 ax ay ra) b c' d@(V3 dx dy rd))
-      | minimum (map (\(V3 _ _ r) -> r) [a, b, c', d]) > 2 * reach = []
-      | minimum (fmap (capsule (V2 ax ay) (V2 dx dy) ra rd) eraser) > reach + 2 * bend = []
-      | legs c <= pixel / 4 = [(t0, t1) | maximum (map (\(V3 _ _ r) -> r) [a, b, c', d]) <= 2 * reach]
-      | otherwise = let (l, r) = split 0.5 c; m = (t0 + t1) / 2 in go t0 m l <> go m t1 r
+    -- Each event adds one continuous sweep; a tap is a stationary sweep.
+    sweeps = zip (first : positions) (if null positions then [first] else positions)
+    outside (V4 a@(V3 ax ay ra) b c d@(V3 dx dy rd)) =
+      all (\(from, to) -> segmentGap from to (V2 ax ay) (V2 dx dy) > reach + max ra rd + 2 * max (segmentDistance a d b) (segmentDistance a d c)) sweeps
+    inside c = any (\(from, to) -> all (\(V3 x y r) -> segmentDistance from to (V2 x y) - r <= reach) c) sweeps
+    cuts = map (merge . go (60 :: Int) 0 1) (toList s.curves)
+    -- Carry the current run in reverse across curve boundaries. Each cut
+    -- ends it; retain the portion before that cut, then start a new run.
+    rebuild run [] = finishRun run []
+    rebuild run ((c, intervals) : rest) = retain run 0 intervals
       where
-        bend = max (segmentDistance a d b) (segmentDistance a d c')
+        retain current t [] = rebuild (if t < 1 then part t 1 c : current else current) rest
+        retain current t ((a, b) : more) =
+          finishRun (if t < a then part t a c : current else current) (retain [] b more)
+    finishRun current rest = case NE.nonEmpty (reverse current) of
+      Just run | sum (fmap legs run) > reach -> fromCurves run : rest
+      _ -> rest
+    part 0 1 c = c
+    part a b c@(V4 start _ _ end) =
+      let V4 p q r end' = roundCurve pixel (snd (split (a / b) (fst (split b c))))
+       in V4 (if a == 0 then start else p) q r (if b == 1 then end else end')
+    -- The parameter ranges of a curve whose ink the eraser touches.
+    go n t0 t1 c
+      | minimum radii > 2 * reach || outside c = []
+      | maximum radii <= 2 * reach && inside c = [(t0, t1)]
+      | legs c <= pixel / 4 || n == 0 = [(t0, t1) | maximum radii <= 2 * reach]
+      | otherwise = let (l, r) = split 0.5 c; m = (t0 + t1) / 2 in go (n - 1) t0 m l <> go (n - 1) m t1 r
+      where
+        radii = fmap (\(V3 _ _ r) -> r) c
     merge ((a, b) : (b', c) : rest) | b == b' = merge ((a, c) : rest)
     merge (r : rest) = r : merge rest
     merge [] = []
+
+-- | The distance between two segments: zero if they cross, otherwise the
+-- closest endpoint to the other segment.
+segmentGap :: V2 Double -> V2 Double -> V2 Double -> V2 Double -> Double
+segmentGap a b c d
+  | opposite (crossZ ab (c - a)) (crossZ ab (d - a))
+    && opposite (crossZ cd (a - c)) (crossZ cd (b - c)) = 0
+  | otherwise = minimum [segmentDistance a b c, segmentDistance a b d, segmentDistance c d a, segmentDistance c d b]
+  where
+    ab = b - a
+    cd = d - c
+    opposite x y = x < 0 && y > 0 || x > 0 && y < 0
 
 -- | Never shorter than a curve.
 legs :: Cubic -> Double

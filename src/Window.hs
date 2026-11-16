@@ -68,9 +68,9 @@ decode ptr = do
   e <- peek ptr
   let at x y = V2 (realToFrac x) (realToFrac y)
       held mask = e.motion.state .&. mask /= zeroBits
+      keyDown mask = e.key.mod .&. mask /= zeroBits
       -- SDL also reports a pen as the mouse, its tip as the left button.
       notPen which = which /= SDL3.SDL_PEN_MOUSEID
-      leftButton = e.button.button == 1 && notPen e.button.which
   pure case tag of
     SDL3.SDL_EVENT_QUIT -> Just Quit
     SDL3.SDL_EVENT_PEN_DOWN -> Just (PenDown (e.ptouch.eraser /= 0) (at e.ptouch.x e.ptouch.y))
@@ -80,11 +80,9 @@ decode ptr = do
       | e.paxis.axis == SDL3.SDL_PEN_AXIS_PRESSURE -> Just (PenPressure (realToFrac e.paxis.value) (at e.paxis.x e.paxis.y))
     SDL3.SDL_EVENT_MOUSE_WHEEL -> Just (Wheel (realToFrac e.wheel.y) (at e.wheel.mouse_x e.wheel.mouse_y))
     SDL3.SDL_EVENT_MOUSE_MOTION
-      | held (SDL3.SDL_BUTTON_RMASK .|. SDL3.SDL_BUTTON_MMASK) -> Just (Drag (at e.motion.xrel e.motion.yrel))
-      | held SDL3.SDL_BUTTON_LMASK && notPen e.motion.which -> Just (MouseMove (at e.motion.x e.motion.y))
-    SDL3.SDL_EVENT_MOUSE_BUTTON_DOWN | leftButton -> Just (MouseDown (at e.button.x e.button.y))
-    SDL3.SDL_EVENT_MOUSE_BUTTON_UP | leftButton -> Just MouseUp
+      | held (SDL3.SDL_BUTTON_RMASK .|. SDL3.SDL_BUTTON_MMASK)
+        || (held SDL3.SDL_BUTTON_LMASK && notPen e.motion.which) -> Just (Drag (at e.motion.xrel e.motion.yrel))
     -- Keys that type something have their character's code point.
     SDL3.SDL_EVENT_KEY_DOWN | e.key.repeat == 0, code <- e.key.key.unwrap, code < 0x110000 ->
-      Just ((if e.key.mod .&. SDL3.SDL_KMOD_CTRL /= zeroBits then Ctrl else Key) (toEnum (fromIntegral code)))
+      Just ((if keyDown SDL3.SDL_KMOD_CTRL then Ctrl else Key) (toEnum (fromIntegral code)))
     _ -> Nothing

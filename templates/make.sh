@@ -1,6 +1,6 @@
 #!/bin/sh
-# Make the templates in this directory as plain SVG that sketch opens (see
-# docs/format.md): lined paper, and strips of panels. Their lines are locked,
+# Make the templates in this directory in Sketch's minimal SVG subset:
+# lined paper and strips of panels. Their lines are locked,
 # for the eraser to leave alone. Start a drawing from one, saving elsewhere:
 #
 #   sketch templates/lined.svg -o notes.svg
@@ -13,10 +13,10 @@ cd "$(dirname "$0")"
   echo '<g fill="none" stroke-width="1" stroke-linecap="round" data-locked="true">'
   y=90
   while [ "$y" -le 870 ]; do
-    echo "<path stroke=\"#a8bfe0\" d=\"M 40 $y H 600\"/>"
+    echo "<line stroke=\"#a8bfe0\" x1=\"40\" y1=\"$y\" x2=\"600\" y2=\"$y\"/>"
     y=$((y + 30))
   done
-  echo '<path stroke="#e8a0a0" d="M 90 40 V 880"/>'
+  echo '<line stroke="#e8a0a0" x1="90" y1="40" x2="90" y2="880"/>'
   echo '</g>'
   echo '</svg>'
 } > lined.svg
@@ -32,7 +32,9 @@ cd "$(dirname "$0")"
     x=40
     i=0
     while [ "$i" -lt "$panels" ]; do
-      echo "<path d=\"M $x $top h $width v 260 h -$width Z\"/>"
+      right=$((x + width))
+      bottom=$((top + 260))
+      echo "<path d=\"M $x $top C $x $top $right $top $right $top $right $top $right $bottom $right $bottom $right $bottom $x $bottom $x $bottom $x $bottom $x $top $x $top\"/>"
       x=$((x + width + 10))
       i=$((i + 1))
     done

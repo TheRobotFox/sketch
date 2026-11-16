@@ -7,7 +7,7 @@ license-file:  LICENSE
 maintainer:    pfoch.tomke@gmail.com
 category:      Graphics
 build-type:    Simple
-extra-source-files: README.md templates/*.svg templates/make.sh
+extra-source-files: README.md a4_karo.svg templates/*.svg templates/make.sh
 
 common shared
   default-language:   GHC2021
@@ -19,7 +19,7 @@ library
   import:          shared
   hs-source-dirs:  src
   exposed-modules: Canvas Model Render Stroke Svg Window
-  build-depends:   bytestring, megaparsec, OpenGL, OpenGLRaw, sdl3-bindgen-sys, split, tagsoup
+  build-depends:   bytestring, megaparsec, OpenGL, OpenGLRaw, sdl3-bindgen-sys, tagsoup
 
 executable sketch
   import:         shared

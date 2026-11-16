@@ -1,6 +1,8 @@
 module Main (main) where
 
 import Canvas
+import Control.Exception (evaluate)
+import Control.Monad (forM, forM_)
 import Data.ByteString qualified as B
 import Data.ByteString.Builder (toLazyByteString)
 import Data.ByteString.Char8 qualified as B8
@@ -20,6 +22,7 @@ import Model
 import Render
 import Stroke
 import Svg qualified
+import System.Timeout (timeout)
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
@@ -61,7 +64,7 @@ outside s p = minimum [capsule (xy a) (xy b) ra rb p | (a@(V3 _ _ ra), b@(V3 _ _
 
 -- | A stroke cut into 1024 straight pieces a curve.
 fine :: Stroke -> [(Point, Point)]
-fine (Stroke cs) = [(a, b) | c <- toList cs, let ps = [at (fromIntegral i / 1024) c | i <- [0 .. 1024 :: Int]], (a, b) <- zip ps (drop 1 ps)]
+fine s = [(a, b) | c <- toList s.curves, let ps = [at (fromIntegral i / 1024) c | i <- [0 .. 1024 :: Int]], (a, b) <- zip ps (drop 1 ps)]
 
 xy :: Point -> V2 Double
 xy (V3 x y _) = V2 x y
@@ -69,9 +72,21 @@ xy (V3 x y _) = V2 x y
 testSettings :: Settings
 testSettings = Settings {width = 6, smoothing = 1.5, palette = [Color 0 0 0, Color 0x1f 0x4f 0xd1]}
 
+testModel :: Model
+testModel = (initial testSettings) {pressure = 0.5}
+
+svgBytes :: View -> [Ink Stroke] -> B.ByteString
+svgBytes view = B.toStrict . toLazyByteString . Svg.document view
+
+readSvg :: String -> IO Svg.Drawing
+readSvg = maybe (assertFailure "not SVG") pure . Svg.parse
+
 main :: IO ()
 main = do
-  gpu <- withWindow "test" \_ -> traverse inkedLikeCPU [1, 1e3, 1e6, 1e9, 1e12]
+  (gpu, repaints) <- withWindow "test" \_ -> do
+    gpu <- traverse inkedLikeCPU [1, 1e3, 1e6, 1e9, 1e12]
+    repaints <- eraserRepaints
+    pure (gpu, repaints)
   defaultMain $
     testGroup
       "sketch"
@@ -79,7 +94,7 @@ main = do
           let s = fit 1.5 ss
            in all (\p -> minimum [segmentDistance a b p | (a, b) <- fine s] <= 3) ss
       , testProperty "halves of a curve trace it" \(Scribble ss) t ->
-          let Stroke (c :| _) = fit 1.5 ss
+          let c = NE.head (fit 1.5 ss).curves
               t' = abs t - fromInteger (floor (abs t))
            in distance (at (t' / 2) c) (at t' (fst (split 0.5 c))) < 1e-9
       , testProperty "zooming keeps the canvas point under the cursor exactly" \(Positive z) x y f ->
@@ -111,101 +126,147 @@ main = do
             | k <- [1, 1e3, 1e6, 1e9, 1e12, 1e15, 1e18], w <- [V2 40 (27 - 1e-3), V2 40 (33 + 1e-9)]
             , let n = length (pieces (1 / 16 / k) w (1000 / k) s)
             ]
-      , testCase "drawing with the mouse adds a stroke, and a drag drops one being drawn" do
-          let run = foldl (flip update) (initial testSettings)
-              stroke = [MouseDown (V2 10 10), MouseMove (V2 20 15), MouseMove (V2 30 10), MouseUp]
+      , testCase "drawing with the pen adds a stroke, and a drag drops one being drawn" do
+          let run = foldl (flip update) (testModel)
+              stroke = [PenDown False (V2 10 10), PenMove (V2 20 15), PenMove (V2 30 10), PenUp]
           length (run stroke).strokes @?= 1
-          length (run (take 3 stroke <> [Drag (V2 5 5), MouseUp])).strokes @?= 0
+          length (run (take 3 stroke <> [Drag (V2 5 5), PenUp])).strokes @?= 0
           (run [Key '2', Key '+']).color @?= 2
       -- The scribbles' ink is under twice as wide as this eraser, which cuts it all.
       , testProperty "what the eraser leaves stays clear of it" \(Scribble ss) (NonEmpty path) ->
           let s = fit 1.5 ss
               eraser = fmap (\(x, y) -> V2 100 100 + V2 x y ^* 3) (NE.fromList (take 20 path))
-           in all (\(Stroke cs) -> and [norm (xy p - e) - r >= 4 - 0.25 | c <- toList cs, i <- [0 .. 32 :: Int], let p@(V3 _ _ r) = at (fromIntegral i / 32) c, e <- toList eraser]) (fromMaybe [s] (erase 4 1 eraser s))
+           in all (\cut -> and [norm (xy p - e) - r >= 4 - 0.25 | c <- toList cut.curves, i <- [0 .. 32 :: Int], let p@(V3 _ _ r) = at (fromIntegral i / 32) c, e <- toList eraser]) (fromMaybe [s] (erase 4 1 eraser s))
       , testCase "the eraser cuts a line in two, and leaves template lines" do
-          let line = Stroke (V4 (V3 0 0 1) (V3 30 0 1) (V3 70 0 1) (V3 100 0 1) :| [])
-          fmap (map (\(Stroke cs) -> let V4 (V3 a _ _) _ _ _ = NE.head cs; V4 _ _ _ (V3 b _ _) = NE.last cs in (round a, round b))) (erase 8 1 (NE.fromList [V2 50 y | y <- [-20, -16 .. 20]]) line) @?= Just [(0 :: Int, 41 :: Int), (59, 100)]
+          let line = fromCurves (V4 (V3 0 0 1) (V3 30 0 1) (V3 70 0 1) (V3 100 0 1) :| [])
+          fmap (map (\cut -> let V4 (V3 a _ _) _ _ _ = NE.head cut.curves; V4 _ _ _ (V3 b _ _) = NE.last cut.curves in (round a, round b))) (erase 8 1 (NE.fromList [V2 50 y | y <- [-20, -16 .. 20]]) line) @?= Just [(0 :: Int, 41 :: Int), (59, 100)]
           wipe 8 (View 0 1) (V2 50 (-20) :| [V2 50 20]) (Ink 0 1 (Color 0 0 0) True line) @?= Nothing
+      , testCase "erasing rebuilds runs across disjoint cuts and curve boundaries" do
+          let line a b = V4 (V3 a 0 1) (V3 (a + (b - a) / 3) 0 1) (V3 (b - (b - a) / 3) 0 1) (V3 b 0 1)
+              ends cut = let V4 (V3 a _ _) _ _ _ = NE.head cut.curves; V4 _ _ _ (V3 b _ _) = NE.last cut.curves in (round a :: Int, round b :: Int)
+          forM_
+            [ ("disjoint cuts", [0, 200], V2 50 (-20) :| [V2 50 20, V2 150 20, V2 150 (-20)], [(0, 41), (59, 141), (159, 200)])
+            , ("cut at a join", [0, 100, 200], V2 100 (-20) :| [V2 100 20], [(0, 91), (109, 200)])
+            , ("whole curves removed", [0, 60, 90, 120, 180], V2 60 0 :| [V2 120 0], [(0, 51), (129, 180)])
+            , ("short island removed", [0, 100], V2 40 (-20) :| [V2 40 20, V2 62 20, V2 62 (-20)], [(0, 31), (71, 100)])
+            ] \(caseName, points, path, expected) -> do
+              let s = fromCurves (NE.fromList (zipWith line points (drop 1 points)))
+              assertEqual caseName (Just expected) (map ends <$> erase 8 1 path s)
+      , testCase "erasing preserves untouched curves and their exact joins" do
+          let join = V3 80.123456789 0 1
+              first = V4 (V3 0 0 1) (V3 20 0 1) (V3 60 0 1) join
+              lastCurve = V4 join (V3 100 0 1) (V3 160 0 1) (V3 200 0 1)
+          case erase 8 1 (V2 30 (-20) :| [V2 30 20]) (fromCurves (first :| [lastCurve])) of
+            Just [_, right] -> do
+              length right.curves @?= 2
+              NE.last right.curves @?= lastCurve
+              let V4 _ _ _ end = NE.head right.curves
+              end @?= join
+            result -> assertFailure (show result)
+      , testProperty "a fast eraser sweep leaves no ink between its input events" \(Scribble ss) ->
+          let from = V2 70 100
+              to = V2 160 100
+              leftovers = fromMaybe [fit 1.5 ss] (erase 4 1 (from :| [to]) (fit 1.5 ss))
+           in all (\cut -> and [segmentDistance from to (xy p) - r >= 3.75 | c <- toList cut.curves, i <- [0 .. 32 :: Int], let p@(V3 _ _ r) = at (fromIntegral i / 32) c]) leftovers
+      , testCase "a fully covered long curve is removed without subdividing its length" do
+          let line = fromCurves (V4 (V3 0 0 1) (V3 3e8 0 1) (V3 6e8 0 1) (V3 9e8 0 1) :| [])
+          result <- timeout 2000000 (evaluate (erase 1e9 1 (V2 0 0 :| []) line))
+          result @?= Just (Just [])
+      , testCase "zero pressure erasing changes no ink or undo history" do
+          let drawn = foldl (flip update) (testModel) [PenDown False (V2 10 50), PenMove (V2 200 50), PenUp]
+              events = [PenPressure 0 (V2 100 0), PenDown True (V2 100 0), PenMove (V2 100 100), PenUp]
+          result <- timeout 2000000 (evaluate ((foldl (flip update) drawn events).edits))
+          result @?= Just drawn.edits
+          let rubbed = foldl (flip update) drawn events
+          rubbed.strokes @?= drawn.strokes
+          length rubbed.past @?= length drawn.past
+      , testCase "erasing preserves fine coordinates when zoomed in" do
+          let line = fromCurves (V4 (V3 0 0 1e-6) (V3 3e-5 0 1e-6) (V3 7e-5 0 1e-6) (V3 1e-4 0 1e-6) :| [])
+          case erase 8e-6 1e-6 (V2 5e-5 (-2e-5) :| [V2 5e-5 2e-5]) line of
+            Just [left, right] -> do
+              let V4 _ _ _ (V3 x _ _) = NE.last left.curves
+                  V4 (V3 y _ _) _ _ _ = NE.head right.curves
+              assertBool (show (x, y)) (x > 4e-5 && x < 4.2e-5 && y > 5.8e-5 && y < 6e-5)
+            result -> assertFailure (show result)
       , testCase "undo and redo strokes and erasing, a gesture at a time" do
-          let run = foldl (flip update) (initial testSettings)
-              stroke y = [MouseDown (V2 10 y), MouseMove (V2 200 y), MouseUp]
+          let run = foldl (flip update) (testModel)
+              stroke y = [PenDown False (V2 10 y), PenMove (V2 200 y), PenUp]
               two = stroke 50 <> stroke 100
               count es = length (run es).strokes
           map count [two, two <> [Ctrl 'z'], two <> [Ctrl 'z', Ctrl 'y']] @?= [2, 1, 2]
-          let rubbed = two <> [Key '0', MouseDown (V2 100 20), MouseMove (V2 100 80), MouseMove (V2 100 130), MouseUp]
-          map count [rubbed, rubbed <> [Ctrl 'z']] @?= [4, 2]
+          let rubbed = two <> [Key '0', PenDown False (V2 100 20), PenMove (V2 100 80), PenMove (V2 100 130), PenUp]
+          map count [rubbed, rubbed <> [Ctrl 'z'], rubbed <> [Ctrl 'z', Ctrl 'y']] @?= [4, 2, 4]
+          (run (rubbed <> [Ctrl 'z', Ctrl 'y'])).strokes @?= (run rubbed).strokes
       , testProperty "a drawing saved as SVG reads back exactly" \(Drawn v inks) ->
-          case Svg.parse (B8.unpack (B.toStrict (toLazyByteString (Svg.document v inks)))) of
+          case Svg.parse (B8.unpack (svgBytes v inks)) of
             Just d -> d.view == Just v && d.strokes == inks && null d.skipped
             Nothing -> False
-      , testCase "a template reads as locked lines, and what can't be read is named" do
-          d <- maybe (assertFailure "not SVG") pure (Svg.parse "<svg><g stroke=\"#a8bfe0\" stroke-width=\"1\" fill=\"none\" data-locked=\"true\"><path d=\"M 40 90 H 600 m 0 30 h -560\"/></g><circle/></svg>")
-          map (.locked) d.strokes @?= [True, True]
-          [(a, b) | Ink {stroke = Stroke (V4 a _ _ b :| [])} <- d.strokes] @?= [(V3 40 90 0.5, V3 600 90 0.5), (V3 600 120 0.5, V3 40 120 0.5)]
-          d.skipped @?= ["circle"]
-      , testCase "lines and rectangles match equivalent paths and inherit styling" do
-          let readSvg body = maybe (assertFailure "not SVG") pure (Svg.parse ("<svg stroke=\"#abc\" stroke-width=\"2\"><g data-locked=\"true\">" <> body <> "</g></svg>"))
-              pairs =
-                [ ("<line x1=\"3\" y1=\"6\" x2=\"12\" y2=\"18\"/>", "M3 6L12 18")
-                , ("<line x2=\" 3e1px \"/>", "M0 0L30 0")
-                , ("<line/>", "M0 0L0 0")
-                , ("<rect x=\"3\" y=\"6\" width=\"12px\" height=\"18\"/>", "M3 6H15V24H3Z")
-                , ("<rect width=\"12\" height=\"18\"/>", "M0 0H12V18H0Z")
-                ]
-          mapM_ (\(shape, path) -> do
-            actual <- readSvg shape
-            expected <- readSvg ("<path d=\"" <> path <> "\"/>")
-            actual.strokes @?= expected.strokes
-            actual.skipped @?= []
-            map (.color) actual.strokes @?= [Color 0xaa 0xbb 0xcc]
-            map (.locked) actual.strokes @?= [True]) pairs
-      , testCase "shape geometry stays local while inline styles and placement apply" do
-          d <- maybe (assertFailure "not SVG") pure (Svg.parse "<svg><g stroke=\"#000\" x1=\"100\" y1=\"100\" x2=\"100\"><line x2=\"3\" stroke-width=\"8\" style=\"stroke:#fff;stroke:#123456;stroke-width:2px\" transform=\"translate(10 20) scale(2)\"/></g></svg>")
+      , testProperty "erased strokes saved as SVG read back exactly" \(Scribble ss) ->
+          let s = fit 1.5 ss
+              inks = [Ink 0 1 (Color 0 0 0) False cut | cut <- fromMaybe [s] (erase 4 1 (V2 100 70 :| [V2 100 150]) s)]
+           in case Svg.parse (B8.unpack (svgBytes (View 0 1) inks)) of
+                Just d -> d.strokes == inks && null d.skipped
+                Nothing -> False
+      , testCase "erased coordinates and SVG commands stay compact" do
+          let line = fromCurves (V4 (V3 0 0 1) (V3 30 0 1) (V3 70 0 1) (V3 100 0 1) :| [])
+              inks = [Ink 0 1 (Color 0 0 0) False s | s <- fromMaybe [line] (erase 8 1 (V2 50 (-20) :| [V2 50 20]) line)]
+              saved = svgBytes (View 0 1) inks
+          assertBool (show (B.length saved)) (B.length saved < 450)
+          d <- readSvg (B8.unpack saved)
+          d.strokes @?= inks
+      , testCase "old repeated-C and compact native paths load identically" do
+          let load d = readSvg ("<svg><path stroke=\"#000\" stroke-width=\"8\" data-r=\"1 2 3 4 5 6 7\" transform=\"translate(10 20) scale(2)\" d=\"" <> d <> "\"/></svg>")
+          old <- load "M0 0C1 2 3 4 5 6C7 8 9 10 11 12"
+          compact <- load "M0 0C1 2 3 4 5 6 7 8 9 10 11 12"
+          map (length . (.stroke.curves)) old.strokes @?= [2]
+          old.strokes @?= compact.strokes
+          old.skipped @?= []
+      , testCase "a native pen tap round trips" do
+          let inks = [Ink 0 1 (Color 0x12 0x34 0x56) False (fromCurves (pure (V3 10.125 20.25 0.375) :| []))]
+          saved <- readSvg (B8.unpack (svgBytes (View 0 1) inks))
+          saved.strokes @?= inks
+      , testCase "A4 karo keeps all 103 locked grid lines, placement and SVG round trips" do
+          d <- readSvg . B8.unpack =<< B.readFile "a4_karo.svg"
+          d.view @?= Just (View (V2 (-50) (-50)) 10)
           d.skipped @?= []
-          d.strokes @?= [Ink (V2 10 20) 2 (Color 0x12 0x34 0x56) False (Stroke (V4 (V3 0 0 1) (V3 1 0 1) (V3 2 0 1) (V3 3 0 1) :| []))]
-      , testCase "rounded rectangles close smoothly and clamp corner radii" do
-          let readRect attrs = maybe (assertFailure "not SVG") pure (Svg.parse ("<svg><rect stroke=\"#000\" width=\"20\" height=\"10\" " <> attrs <> "/></svg>"))
-          d <- readRect "rx=\"2\""
-          both <- readRect "rx=\"2\" ry=\"2\""
-          d.strokes @?= both.strokes
-          onlyY <- readRect "ry=\"2\""
-          onlyY.strokes @?= both.strokes
-          square <- readRect "rx=\"2\" ry=\"0\""
-          plain <- readRect ""
-          square.strokes @?= plain.strokes
-          large <- readRect "rx=\"100\" ry=\"100\""
-          clamped <- readRect "rx=\"10\" ry=\"5\""
-          large.strokes @?= clamped.strokes
-          case d.strokes of
-            [Ink {stroke = Stroke cs}] -> do
-              let curves = toList cs
-                  starts = [a | V4 a _ _ _ <- curves]
-                  ends = [b | V4 _ _ _ b <- curves]
-              starts @?= [V3 2 0 0.5, V3 18 0 0.5, V3 20 2 0.5, V3 20 8 0.5, V3 18 10 0.5, V3 2 10 0.5, V3 0 8 0.5, V3 0 2 0.5]
-              ends @?= drop 1 starts <> take 1 starts
-              assertBool "tangents join" (and [norm (cross (b - a) (a - c)) < 1e-9 | (V4 a b _ _, V4 _ _ c _) <- zip curves (last curves : init curves)])
-              saved <- maybe (assertFailure "not SVG") pure (Svg.parse (B8.unpack (B.toStrict (toLazyByteString (Svg.document (View 0 1) d.strokes)))))
-              saved.strokes @?= d.strokes
-            _ -> assertFailure "expected one rounded rectangle"
-      , testCase "empty rectangles and unpainted shapes add no ink" do
-          d <- maybe (assertFailure "not SVG") pure (Svg.parse "<svg stroke=\"#000\"><rect/><rect width=\"10\"/><rect width=\"0\" height=\"10\"/><line stroke=\"none\"/><line stroke-width=\"0\"/></svg>")
-          d.strokes @?= []
-          d.skipped @?= []
-      , testCase "invalid shapes are reported and following shapes still load" do
-          mapM_ (\(shape, why) -> do
-            d <- maybe (assertFailure "not SVG") pure (Svg.parse ("<svg stroke=\"#000\">" <> shape <> "<line x2=\"3\"/></svg>"))
-            d.skipped @?= [why]
-            length d.strokes @?= 1)
-            [ ("<line x1=\"bad\"/>", "line with an unreadable x1")
-            , ("<line y2=\"20%\"/>", "line with an unreadable y2")
+          map (.color) d.strokes @?= replicate 103 (Color 0xdf 0xdf 0xdf)
+          map (.locked) d.strokes @?= replicate 103 True
+          let ends = [(a, b) | ink <- d.strokes, V4 a _ _ b :| [] <- [ink.stroke.curves]]
+          ends @?= [(V3 0 y 0.15, V3 210 y 0.15) | y <- [0, 5 .. 295]] <> [(V3 x 0 0.15, V3 x 297 0.15) | x <- [0, 5 .. 210]]
+          map (wipe 30 (View 0 1) (V2 100 100 :| [])) d.strokes @?= replicate 103 Nothing
+          saved <- readSvg (B8.unpack (svgBytes (View (V2 (-50) (-50)) 10) d.strokes))
+          saved.strokes @?= d.strokes
+          saved.view @?= d.view
+      , testCase "the bundled lined and panel templates use the supported subset" do
+          forM_ [("templates/lined.svg", 28), ("templates/panels.svg", 6)] \(file, count) -> do
+            d <- readSvg . B8.unpack =<< B.readFile file
+            d.skipped @?= []
+            length d.strokes @?= count
+            assertBool file (all (.locked) d.strokes)
+      , testCase "plain lines inherit color, width and locking without inheriting coordinates" do
+          d <- readSvg "<svg stroke=\"#abc\" stroke-width=\"2\"><g data-locked=\"true\" x1=\"100\"><line x2=\"3\"/><line x1=\"4\" y1=\"5\" x2=\"8\" y2=\"9\" stroke=\"#123456\" stroke-width=\"4\"/></g></svg>"
+          d.strokes @?= [Ink 0 1 (Color 0xaa 0xbb 0xcc) True (fromCurves (V4 (V3 0 0 1) (V3 0 0 1) (V3 3 0 1) (V3 3 0 1) :| [])), Ink 0 1 (Color 0x12 0x34 0x56) True (fromCurves (V4 (V3 4 5 2) (V3 4 5 2) (V3 8 9 2) (V3 8 9 2) :| []))]
+      , testCase "unsupported SVG and malformed data are reported, and following lines still load" do
+          forM_
+            [ ("<rect width=\"10\" height=\"20\"/>", "rect")
+            , ("<path d=\"M0 0L3 0\"/>", "path with an unreadable d")
+            , ("<path d=\"m0 0c0 0 3 0 3 0\"/>", "path with an unreadable d")
+            , ("<path d=\"M0 0C0 0 3 0 3 0M4 0C4 0 6 0 6 0\"/>", "path with an unreadable d")
+            , ("<path d=\"M0 0C0 0 3 0 3\"/>", "path with an unreadable d")
+            , ("<path d=\"M0 0C0 0 3 0 3 0\" data-r=\"1 2\"/>", "path with an unreadable data-r")
+            , ("<line x1=\"bad\"/>", "line with an unreadable x1")
             , ("<line x2=\"1e999\"/>", "line with an unreadable x2")
-            , ("<line stroke-width=\"-1\"/>", "line with a negative stroke-width")
-            , ("<rect width=\"-1\" height=\"2\"/>", "rect with negative dimensions or corner radii")
-            , ("<rect rx=\"-1\"/>", "rect with negative dimensions or corner radii")
-            , ("<rect width=\"bad\"/>", "rect with an unreadable width")
-            , ("<rect transform=\"rotate(30)\"/>", "rect with a transform other than translate and scale")
-            ]
+            , ("<line stroke-width=\"-1\"/>", "line with an unreadable stroke-width")
+            , ("<line transform=\"rotate(30)\"/>", "line with an unreadable transform")
+            , ("<line style=\"stroke:#fff\"/>", "line with style")
+            , ("<g transform=\"translate(10 20)\"><line x2=\"999\"/></g>", "styled or transformed group")
+            , ("<g style=\"stroke:#fff\"><line x2=\"999\"/></g>", "styled or transformed group")
+            ] \(shape, why) -> do
+              d <- readSvg ("<svg stroke=\"#000\">" <> shape <> "<line x2=\"3\"/></svg>")
+              d.skipped @?= [why]
+              length d.strokes @?= 1
       , testGroup "the GPU inks what the CPU works out" [testCase ("zoom " <> show z) (assertBool msg ok) | (z, ok, msg) <- gpu]
+      , testGroup "erasing repaints match a full redraw" [testCase ("frame " <> show n) (assertBool "pixels differ" ok) | (n, ok) <- zip [0 :: Int ..] repaints]
       ]
 
 -- | Render a few strokes through the GPU, zoomed in about a point on an
@@ -217,16 +278,36 @@ inkedLikeCPU z = do
   let strokes = [fit 1.5 (V3 100 100 0.5 :| [V3 200 150 2, V3 300 100 4]), fit 1.5 (V3 150 200 3 :| [V3 160 120 0.2])]
       -- The bottom of the second stroke's round start.
       edge = V2 150 203 - V2 320 240 ^/ z
-      m = (initial testSettings) {strokes = Seq.fromList [Ink 0 1 (Color 0 0 0) False s | s <- strokes], view = View (fmap toRational edge) z}
+      m = (testModel) {strokes = Seq.fromList [Ink 0 1 (Color 0 0 0) False s | s <- strokes], view = View (fmap toRational edge) z}
   render r (V2 640 480) m
-  GL.bindFramebuffer GL.ReadFramebuffer $= GL.defaultFramebufferObject
-  bytes <- V.fromList <$> allocaArray (640 * 480 * 4) \p -> do
-    GL.readPixels (GL.Position 0 0) (GL.Size 640 480) (GL.PixelData GL.RGBA GL.UnsignedByte (castPtr p))
-    peekArray (640 * 480 * 4) (p :: Ptr GL.GLubyte)
-  let shownStrokes = map (shown (V2 640 480) m.view) (toList m.strokes)
+  bytes <- pixels (V2 640 480)
+  let shownStrokes = map (shown (0, V2 640 480) m.view) (toList m.strokes)
       -- Black ink over white, stroke after stroke.
       expected x y = foldl (\v ps -> v * (1 - coverage ps (V2 (x + 0.5) (y + 0.5)))) 255 shownStrokes
       coverage ps q = max 0 (min 1 (0.5 - minimum (1 / 0 : [capsule a b ra rb q | ((a, ra), (b, rb)) <- ps])))
       (worst, at') = maximum [(abs (fromIntegral (bytes V.! (4 * ((479 - y) * 640 + x))) - expected (fromIntegral x) (fromIntegral y)), (x, y)) | y <- [0 .. 479], x <- [0 .. 639]]
       inked = length [() | i <- [0, 4 .. V.length bytes - 1], bytes V.! i < 128]
   pure (z, worst <= 2 && inked > 1000 && inked < 300000, "largest difference " <> show worst <> "/255 at " <> show at' <> ", " <> show inked <> " px inked, " <> show (length (concat shownStrokes)) <> " pieces")
+
+pixels :: V2 Int -> IO (V.Vector GL.GLubyte)
+pixels (V2 w h) = do
+  GL.bindFramebuffer GL.ReadFramebuffer $= GL.defaultFramebufferObject
+  V.fromList <$> allocaArray (w * h * 4) \p -> do
+    GL.readPixels (GL.Position 0 0) (GL.Size (fromIntegral w) (fromIntegral h)) (GL.PixelData GL.RGBA GL.UnsignedByte (castPtr p))
+    peekArray (w * h * 4) (p :: Ptr GL.GLubyte)
+
+-- | Exercise the cached layer during a gesture, then compare each frame
+-- with a renderer that redraws the whole document. Include overlapping
+-- colours, locked ink, offscreen cuts, undo/redo and a resize mid-gesture.
+eraserRepaints :: IO [Bool]
+eraserRepaints = do
+  let line color locked y = Ink 0 1 color locked (fit 1 (V3 50 y 2 :| [V3 250 y 2]))
+      m0 = (testModel) {strokes = Seq.fromList [line (Color 0 0 0) True 99, line (Color 0xff 0 0) False 100, line (Color 0 0 0xff) False 102, line (Color 0 0 0) False 350, line (Color 0 0 0) False (-50)]}
+      events = [Key '0', PenDown False (V2 100 70), PenMove (V2 100 120), PenMove (V2 160 120), PenMove (V2 160 70), PenUp, Ctrl 'z', Ctrl 'y', PenDown False (V2 100 (-70)), PenMove (V2 100 (-30)), PenUp]
+      models = scanl (flip update) m0 events
+      frames = [(size, m) | (n, m) <- zip [0 :: Int ..] models, size <- if n == 4 then [V2 640 480, V2 320 240, V2 640 480] else [V2 640 480]]
+  cached <- newRenderer
+  actual <- forM frames \(size, m) -> render cached size m >> pixels size
+  fresh <- newRenderer
+  expected <- forM (zip [1 :: Int ..] frames) \(n, (size, m)) -> render fresh size m {erasing = Nothing, edits = n} >> pixels size
+  pure (zipWith (==) actual expected)

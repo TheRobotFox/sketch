@@ -39,3 +39,7 @@ A small, fast tool for quick note taking / sketching with direct SVG output. Can
       --colors #RGB,...        the colours keys 1 to 9 pick, as #RGB or #RRGGBB
       -h,--help                Show this help text
 
+SVG input supports Sketch's own absolute M/C paths, plain lines, and groups
+inheriting stroke color, width, and the lock flag. The `a4_karo.svg`, lined,
+and panel templates use this subset. Other SVG features are reported as skipped.
+

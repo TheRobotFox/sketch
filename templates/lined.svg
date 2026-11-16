@@ -1,32 +1,32 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 900">
 <g fill="none" stroke-width="1" stroke-linecap="round" data-locked="true">
-<path stroke="#a8bfe0" d="M 40 90 H 600"/>
-<path stroke="#a8bfe0" d="M 40 120 H 600"/>
-<path stroke="#a8bfe0" d="M 40 150 H 600"/>
-<path stroke="#a8bfe0" d="M 40 180 H 600"/>
-<path stroke="#a8bfe0" d="M 40 210 H 600"/>
-<path stroke="#a8bfe0" d="M 40 240 H 600"/>
-<path stroke="#a8bfe0" d="M 40 270 H 600"/>
-<path stroke="#a8bfe0" d="M 40 300 H 600"/>
-<path stroke="#a8bfe0" d="M 40 330 H 600"/>
-<path stroke="#a8bfe0" d="M 40 360 H 600"/>
-<path stroke="#a8bfe0" d="M 40 390 H 600"/>
-<path stroke="#a8bfe0" d="M 40 420 H 600"/>
-<path stroke="#a8bfe0" d="M 40 450 H 600"/>
-<path stroke="#a8bfe0" d="M 40 480 H 600"/>
-<path stroke="#a8bfe0" d="M 40 510 H 600"/>
-<path stroke="#a8bfe0" d="M 40 540 H 600"/>
-<path stroke="#a8bfe0" d="M 40 570 H 600"/>
-<path stroke="#a8bfe0" d="M 40 600 H 600"/>
-<path stroke="#a8bfe0" d="M 40 630 H 600"/>
-<path stroke="#a8bfe0" d="M 40 660 H 600"/>
-<path stroke="#a8bfe0" d="M 40 690 H 600"/>
-<path stroke="#a8bfe0" d="M 40 720 H 600"/>
-<path stroke="#a8bfe0" d="M 40 750 H 600"/>
-<path stroke="#a8bfe0" d="M 40 780 H 600"/>
-<path stroke="#a8bfe0" d="M 40 810 H 600"/>
-<path stroke="#a8bfe0" d="M 40 840 H 600"/>
-<path stroke="#a8bfe0" d="M 40 870 H 600"/>
-<path stroke="#e8a0a0" d="M 90 40 V 880"/>
+<line stroke="#a8bfe0" x1="40" y1="90" x2="600" y2="90"/>
+<line stroke="#a8bfe0" x1="40" y1="120" x2="600" y2="120"/>
+<line stroke="#a8bfe0" x1="40" y1="150" x2="600" y2="150"/>
+<line stroke="#a8bfe0" x1="40" y1="180" x2="600" y2="180"/>
+<line stroke="#a8bfe0" x1="40" y1="210" x2="600" y2="210"/>
+<line stroke="#a8bfe0" x1="40" y1="240" x2="600" y2="240"/>
+<line stroke="#a8bfe0" x1="40" y1="270" x2="600" y2="270"/>
+<line stroke="#a8bfe0" x1="40" y1="300" x2="600" y2="300"/>
+<line stroke="#a8bfe0" x1="40" y1="330" x2="600" y2="330"/>
+<line stroke="#a8bfe0" x1="40" y1="360" x2="600" y2="360"/>
+<line stroke="#a8bfe0" x1="40" y1="390" x2="600" y2="390"/>
+<line stroke="#a8bfe0" x1="40" y1="420" x2="600" y2="420"/>
+<line stroke="#a8bfe0" x1="40" y1="450" x2="600" y2="450"/>
+<line stroke="#a8bfe0" x1="40" y1="480" x2="600" y2="480"/>
+<line stroke="#a8bfe0" x1="40" y1="510" x2="600" y2="510"/>
+<line stroke="#a8bfe0" x1="40" y1="540" x2="600" y2="540"/>
+<line stroke="#a8bfe0" x1="40" y1="570" x2="600" y2="570"/>
+<line stroke="#a8bfe0" x1="40" y1="600" x2="600" y2="600"/>
+<line stroke="#a8bfe0" x1="40" y1="630" x2="600" y2="630"/>
+<line stroke="#a8bfe0" x1="40" y1="660" x2="600" y2="660"/>
+<line stroke="#a8bfe0" x1="40" y1="690" x2="600" y2="690"/>
+<line stroke="#a8bfe0" x1="40" y1="720" x2="600" y2="720"/>
+<line stroke="#a8bfe0" x1="40" y1="750" x2="600" y2="750"/>
+<line stroke="#a8bfe0" x1="40" y1="780" x2="600" y2="780"/>
+<line stroke="#a8bfe0" x1="40" y1="810" x2="600" y2="810"/>
+<line stroke="#a8bfe0" x1="40" y1="840" x2="600" y2="840"/>
+<line stroke="#a8bfe0" x1="40" y1="870" x2="600" y2="870"/>
+<line stroke="#e8a0a0" x1="90" y1="40" x2="90" y2="880"/>
 </g>
 </svg>

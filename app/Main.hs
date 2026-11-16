@@ -2,13 +2,13 @@
 -- README for how to draw, erase, undo, zoom and pan.
 module Main (main) where
 
-import Canvas (Color (..), View (..))
+import Canvas (Color (..), View (..), readColor)
 import Control.Exception (IOException, displayException, try)
 import Control.Monad (unless, when)
 import Data.ByteString qualified as B
 import Data.ByteString.Builder (toLazyByteString)
 import Data.ByteString.Char8 qualified as B8
-import Data.Char (digitToInt, isHexDigit)
+import Data.ByteString.Lazy qualified as BL
 import Data.Foldable (for_, toList)
 import Data.List (intercalate)
 import Data.List.Split (splitOn)
@@ -61,7 +61,7 @@ main = do
 -- half written; why it failed, if it did.
 save :: FilePath -> Model -> IO (Maybe String)
 save path m = either (\e -> Just (displayException (e :: IOException))) (const Nothing) <$> try do
-  B.writeFile (path <> ".tmp") (B.toStrict (toLazyByteString (Svg.document m.view (toList m.strokes))))
+  BL.writeFile (path <> ".tmp") (toLazyByteString (Svg.document m.view (toList m.strokes)))
   renameFile (path <> ".tmp") path
 
 options :: Parser Options
@@ -76,15 +76,9 @@ options =
         )
   where
     positive = auto >>= \x -> if x > 0 then pure x else readerError "must be positive"
-    colors s = case traverse color (splitOn "," s) of
+    colors s = case traverse readColor (splitOn "," s) of
       Just cs@(_ : _) | length cs <= 9 -> Right cs
       _ -> Left "expected 1 to 9 colours like #1f4fd1, separated by commas"
-    color ('#' : hex) | all isHexDigit hex = case map digitToInt hex of
-      [r, g, b] -> Just (Color (17 * byte r) (17 * byte g) (17 * byte b))
-      [r1, r2, g1, g2, b1, b2] -> Just (Color (byte (16 * r1 + r2)) (byte (16 * g1 + g2)) (byte (16 * b1 + b2)))
-      _ -> Nothing
-    color _ = Nothing
-    byte = fromIntegral
 
 defaultPalette :: [Color]
 defaultPalette =

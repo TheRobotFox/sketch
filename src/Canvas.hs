@@ -4,6 +4,7 @@
 module Canvas
   ( Pos
   , Color (..)
+  , readColor
   , Ink (..)
   , View (..)
   , Piece
@@ -14,19 +15,30 @@ module Canvas
   , addSample
   , finish
   , shown
+  , extent
   , live
   , wipe
   ) where
 
+import Data.Char (isHexDigit)
 import Data.List.NonEmpty (NonEmpty (..), nonEmpty)
 import Data.Word (Word8)
 import Linear
-import Stroke (Point, Stroke (..), erase, fit, pieces)
+import Numeric (readHex)
+import Stroke (Box, Point, Stroke, bounds, erase, fit, overlaps, pieces, rounded)
 
 type Pos = V2 Rational
 
 data Color = Color Word8 Word8 Word8
   deriving (Eq, Show)
+
+-- | The #RGB and #RRGGBB colours accepted by SVG and the command line.
+readColor :: String -> Maybe Color
+readColor ('#' : hex) | all isHexDigit hex, [(v, "")] <- readHex hex = case length hex of
+  3 -> Just (Color (17 * fromInteger (v `div` 256)) (17 * fromInteger (v `div` 16 `mod` 16)) (17 * fromInteger (v `mod` 16)))
+  6 -> Just (Color (fromInteger (v `div` 65536)) (fromInteger (v `div` 256 `mod` 256)) (fromInteger (v `mod` 256)))
+  _ -> Nothing
+readColor _ = Nothing
 
 -- | Something drawn: its point q lies on the canvas at origin + q * scale.
 -- Template lines are locked, for the eraser to leave alone.
@@ -82,9 +94,7 @@ addSample v s width ink = (V3 x y (width / 2 / k) :) <$> ink
 -- | Fit the samples, newest first, into a stroke smoothed to this many
 -- pixels, its numbers rounded to thousandths so that they print short.
 finish :: Double -> Ink [Point] -> Maybe (Ink Stroke)
-finish smoothing = traverse \samples -> round3 . fit smoothing <$> nonEmpty (reverse samples)
-  where
-    round3 (Stroke cs) = Stroke (fmap (fmap (fmap \x -> fromInteger (round (x * 1000)) / 1000)) cs)
+finish smoothing = traverse \samples -> rounded 1 . fit smoothing <$> nonEmpty (reverse samples)
 
 -- | A window position in a drawing's own pixels.
 inDrawing :: View -> V2 Double -> Ink a -> V2 Double
@@ -100,13 +110,24 @@ placement s v ink = (from, at, k)
     at = fmap fromRational ((ink.origin + fmap toRational from ^* toRational ink.scale - v.pan) ^* toRational v.zoom)
     k = ink.scale * v.zoom
 
--- | The pieces of a stroke that show in a window of this size, flat to a
+-- | The pieces of a stroke that show in this window area, flat to a
 -- 16th of a pixel and at least a pixel wide. The window reaches a pixel
 -- further, for that width and the fading edge.
-shown :: V2 Double -> View -> Ink Stroke -> [Piece]
-shown size v ink = map (onScreen p) (pieces (1 / 16 / k) from ((norm size / 2 + 1) / k) ink.stroke)
+shown :: Box -> View -> Ink Stroke -> [Piece]
+shown (lo, hi) v ink
+  | not (overlaps (bounds ink.stroke) (from - half, from + half)) = []
+  | otherwise = map (onScreen p) (pieces (1 / 16 / k) from ((norm (hi - lo) / 2 + 1) / k) ink.stroke)
   where
-    p@(from, _, k) = placement (size / 2) v ink
+    p@(from, _, k) = placement ((lo + hi) / 2) v ink
+    half = ((hi - lo) / 2 + 1) ^/ k
+
+-- | The box a stroke occupies in window pixels, for repainting after a cut.
+extent :: View -> Ink Stroke -> Box
+extent v ink = (place lo, place hi)
+  where
+    (lo, hi) = bounds ink.stroke
+    (from, at, k) = placement 0 v ink
+    place q = at + (q - from) ^* k
 
 -- | The stroke being drawn, from sample to sample.
 live :: V2 Double -> View -> Ink [Point] -> [Piece]
@@ -126,7 +147,9 @@ onScreen (from, at, k) (V3 ax ay ra, V3 bx by rb) = (end (V2 ax ay) ra, end (V2 
 -- stay.
 wipe :: Double -> View -> NonEmpty (V2 Double) -> Ink Stroke -> Maybe [Ink Stroke]
 wipe radius v path@(s0 :| _) ink
-  | ink.locked = Nothing
-  | otherwise = map (\s -> ink {stroke = s}) <$> erase (radius / k) (1 / k) (fmap (\s -> from + (s - at) ^/ k) path) ink.stroke
+  | ink.locked || radius <= 0 || not (overlaps (bounds ink.stroke) area) = Nothing
+  | otherwise = map (\s -> ink {stroke = s}) <$> erase (radius / k) (1 / k) points ink.stroke
   where
     (from, at, k) = placement s0 v ink
+    points = fmap (\s -> from + (s - at) ^/ k) path
+    area = (foldr1 (liftA2 min) points - pure (radius / k), foldr1 (liftA2 max) points + pure (radius / k))
